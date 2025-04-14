@@ -13,17 +13,10 @@ import sys
 GPU_AVAILABLE = cp.cuda.is_available()
 print(f"GPU acceleration: {'Enabled' if GPU_AVAILABLE else 'Disabled'}")
 
-# フォント設定の試行錯誤を避けるため、組み込みフォントを使用
-# 日本語文字を含まないフォントでも、表示できるように設定
-matplotlib.rcParams['font.family'] = 'sans-serif'
-matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Verdana', 'Arial']
-# 日本語のタイトルや文字をUnicodeエスケープシーケンスに変換して使用する
-matplotlib.rcParams['axes.unicode_minus'] = False
-
 SIZE = 100
 
 class TuringPattern:
-    def __init__(self, width=200, height=200, du=0.14, dv=0.06, feed=0.035, kill=0.065):
+    def __init__(self, width=200, height=200, du=0.14, dv=0.06, feed=0.035, kill=0.058):
         self.width = width
         self.height = height
         self.du = du  # 拡散係数 U
@@ -149,7 +142,10 @@ def main():
     plt.title('Turing Pattern Simulation\nClick to add disturbance')
     
     # 画像表示用のオブジェクト
-    img = ax.imshow(cp.asnumpy(pattern.V) if GPU_AVAILABLE else pattern.V, cmap='viridis', interpolation='nearest')
+    # https://matplotlib.org/stable/users/explain/colors/colormaps.html
+    img = ax.imshow(cp.asnumpy(pattern.V) if GPU_AVAILABLE else pattern.V, 
+                    cmap='viridis', interpolation='nearest', 
+                    vmin=0.0, vmax=0.5)  # 値域を0〜1に明示的に設定
     ax.set_xticks([])
     ax.set_yticks([])
     
@@ -163,8 +159,8 @@ def main():
     # スライダーの作成
     slider_du = widgets.Slider(ax_du, 'Du (Diffusion U)', 0.01, 0.3, valinit=0.14, valfmt='%1.3f')
     slider_dv = widgets.Slider(ax_dv, 'Dv (Diffusion V)', 0.01, 0.3, valinit=0.06, valfmt='%1.3f')
-    slider_feed = widgets.Slider(ax_feed, 'Feed Rate', 0.01, 0.1, valinit=0.035, valfmt='%1.3f')
-    slider_kill = widgets.Slider(ax_kill, 'Kill Rate', 0.01, 0.1, valinit=0.065, valfmt='%1.3f')
+    slider_feed = widgets.Slider(ax_feed, 'Feed Rate', 0.0, 0.1, valinit=0.035, valfmt='%1.3f')
+    slider_kill = widgets.Slider(ax_kill, 'Kill Rate', 0.0, 0.1, valinit=0.058, valfmt='%1.3f')
     
     # ===== パラメータ表示エリア =====
     # パラメータ情報表示用のテキストエリア
