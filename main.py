@@ -8,6 +8,8 @@ import matplotlib.widgets as widgets
 import os
 import time
 import sys
+from scipy.stats import wasserstein_distance  # Wasserstein距離計算用
+from collections import deque  # 効率的なデータ構造のためにdequeを追加
 
 # GPUが利用可能かチェック
 GPU_AVAILABLE = cp.cuda.is_available()
@@ -24,21 +26,25 @@ class TuringPattern:
         self.feed = feed  # 供給率
         self.kill = kill  # 除去率
         
-        # 初期状態をランダムに設定
+        # 初期状態を生成
         if GPU_AVAILABLE:
-            self.U = cp.random.random((height, width)) * 0.5 + 0.25
-            self.V = cp.random.random((height, width)) * 0.5 + 0.25
+            self.U = cp.random.random((height, width)) * 0.0 + 1.0
+            self.V = cp.random.random((height, width)) * 0.0
             # ラプラシアン計算用の畳み込みフィルタ
             self.laplacian = cp.array([[0.05, 0.2, 0.05], 
                                        [0.2, -1.0, 0.2], 
                                        [0.05, 0.2, 0.05]])
         else:
-            self.U = np.random.random((height, width)) * 0.5 + 0.25
-            self.V = np.random.random((height, width)) * 0.5 + 0.25
+            self.U = np.random.random((height, width)) * 0.0 + 1.0
+            self.V = np.random.random((height, width)) * 0.0
             # ラプラシアン計算用の畳み込みフィルタ
             self.laplacian = np.array([[0.05, 0.2, 0.05], 
                                        [0.2, -1.0, 0.2], 
                                        [0.05, 0.2, 0.05]])
+        
+        # 初期状態を保存
+        self.initial_U = self.U.copy()
+        self.initial_V = self.V.copy()
     
     def update(self, steps=1):
         """反応拡散方程式を1ステップ進める"""
@@ -55,7 +61,7 @@ class TuringPattern:
                 uvv = u * v * v
                 
                 # 反応拡散方程式
-                self.U += (self.du * delta_u - uvv + self.feed * (1.0 - u)) * 1.0
+                self.U += (self.du * delta_u - uvv + self.feed * (1.0 - u)) * 1.0 
                 self.V += (self.dv * delta_v + uvv - (self.feed + self.kill) * v) * 1.0
             else:
                 uvv = u * v * v
@@ -121,40 +127,75 @@ class TuringPattern:
             self.feed = feed
         if kill is not None:
             self.kill = kill
+    
+    def calculate_wasserstein_distance(self):
+        """初期状態と現在の状態のWasserstein距離を計算"""
+        if GPU_AVAILABLE:
+            current_U = cp.asnumpy(self.U)
+            current_V = cp.asnumpy(self.V)
+            initial_U = cp.asnumpy(self.initial_U)
+            initial_V = cp.asnumpy(self.initial_V)
+        else:
+            current_U = self.U
+            current_V = self.V
+            initial_U = self.initial_U
+            initial_V = self.initial_V
+        
+        # 1次元配列に変換して計算（wasserstein_distanceは1D配列を期待する）
+        distance_U = wasserstein_distance(initial_U.flatten(), current_U.flatten())
+        distance_V = wasserstein_distance(initial_V.flatten(), current_V.flatten())
+        
+        return distance_U, distance_V
 
 
-def main():
+def main(history_steps=100):
     # チューリングパターンシミュレーションの初期化
     pattern = TuringPattern(width=SIZE, height=SIZE)
     
     # 初期状態を数ステップ進めておく（パターンの形成を開始）
     pattern.update(steps=1)
     
-    # ===== レイアウト改善のためのフィギュア設定 =====
+    # Wasserstein距離の履歴をdequeで管理（0で初期化）
+    w_distance_history_u = deque([0.0] * history_steps, maxlen=history_steps)
+    w_distance_history_v = deque([0.0] * history_steps, maxlen=history_steps) 
+    
+    # 常に表示するX軸の値を生成
+    steps_array = np.arange(history_steps)
+    
+    step_counter = 0
+    
+    # ===== レイアウトの設定 =====
     # より広い画面サイズで、UIコンポーネント用の十分なスペースを確保
-    fig = plt.figure(figsize=(10, 12))
+    fig = plt.figure(figsize=(12, 10))
     
-    # グラフのレイアウト設定 - 縦方向により多くのスペースを確保
-    gs = fig.add_gridspec(12, 1)
+    # グリッド設定（2行2列）- 高さ比を調整してWasserstein距離グラフにもう少しスペースを確保
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.8, 1])
     
-    # メインの描画領域（上部8グリッド分を使用）
-    ax = fig.add_subplot(gs[0:8, 0])
-    plt.title('Turing Pattern Simulation\nClick to add disturbance')
+    # 左上：チューリングパターングラフ
+    ax_pattern = fig.add_subplot(gs[0, 0])
+    ax_pattern.set_title('Turing Pattern Simulation\nClick to add disturbance')
     
     # 画像表示用のオブジェクト
-    # https://matplotlib.org/stable/users/explain/colors/colormaps.html
-    img = ax.imshow(cp.asnumpy(pattern.V) if GPU_AVAILABLE else pattern.V, 
+    img = ax_pattern.imshow(cp.asnumpy(pattern.V) if GPU_AVAILABLE else pattern.V, 
                     cmap='viridis', interpolation='nearest', 
-                    vmin=0.0, vmax=0.5)  # 値域を0〜1に明示的に設定
-    ax.set_xticks([])
-    ax.set_yticks([])
+                    vmin=0.0, vmax=0.5)
+    ax_pattern.set_xticks([])
+    ax_pattern.set_yticks([])
     
-    # ===== スライダーの配置改善 =====
-    # スライダー用のサブプロットを配置
-    ax_du = fig.add_subplot(gs[8, 0])
-    ax_dv = fig.add_subplot(gs[9, 0])
-    ax_feed = fig.add_subplot(gs[10, 0])
-    ax_kill = fig.add_subplot(gs[11, 0])
+    # 右上：パラメータ調整用のスライダー - 配置調整
+    ax_sliders = fig.add_subplot(gs[0, 1])
+    ax_sliders.axis('off')
+    
+    # スライダーの配置を調整
+    slider_width = 0.25
+    slider_height = 0.03
+    slider_x = 0.65
+    
+    # スライダーのY位置を上に調整
+    ax_du = fig.add_axes([slider_x, 0.9, slider_width, slider_height])
+    ax_dv = fig.add_axes([slider_x, 0.8, slider_width, slider_height])
+    ax_feed = fig.add_axes([slider_x, 0.7, slider_width, slider_height])
+    ax_kill = fig.add_axes([slider_x, 0.6, slider_width, slider_height])
     
     # スライダーの作成
     slider_du = widgets.Slider(ax_du, 'Du (Diffusion U)', 0.01, 0.3, valinit=0.14, valfmt='%1.3f')
@@ -162,20 +203,39 @@ def main():
     slider_feed = widgets.Slider(ax_feed, 'Feed Rate', 0.0, 0.1, valinit=0.035, valfmt='%1.3f')
     slider_kill = widgets.Slider(ax_kill, 'Kill Rate', 0.0, 0.1, valinit=0.058, valfmt='%1.3f')
     
+    # 下：Wasserstein距離をプロットしたグラフ - 配置調整
+    ax_distance = fig.add_subplot(gs[1, :])
+    ax_distance.set_title('Wasserstein Distance from Initial State')
+    ax_distance.set_xlabel('Steps')
+    ax_distance.set_ylabel('Distance')
+    
+    # 折れ線グラフの初期化 - プロット範囲を0から始まるように設定
+    line_u, = ax_distance.plot([], [], label='U Component')
+    line_v, = ax_distance.plot([], [], label='V Component')
+    ax_distance.legend(loc='upper right')  # 凡例を右上に配置
+    ax_distance.set_xlim(0, history_steps)
+    ax_distance.set_ylim(0, 1.0)
+    ax_distance.grid(True)
+    
     # ===== パラメータ表示エリア =====
-    # パラメータ情報表示用のテキストエリア
-    param_text_ax = fig.add_axes([0.25, 0.01, 0.5, 0.02])  # 位置を下部中央に移動
+    # パラメータ情報表示用のテキストエリア - 位置調整
+    param_text_ax = fig.add_axes([slider_x, 0.5, slider_width, 0.05])
     param_text_ax.axis('off')  # 軸を非表示
     param_text = param_text_ax.text(0.5, 0.5, '', ha='center', va='center', transform=param_text_ax.transAxes)
     
     # ===== リセットボタン =====
-    # リセットボタンの配置（右下隅）
-    reset_ax = fig.add_axes([0.8, 0.01, 0.15, 0.03])
+    # リセットボタンの配置を調整（被らないように上に移動）
+    reset_ax = fig.add_axes([slider_x + 0.05, 0.45, 0.15, 0.05])
     reset_button = widgets.Button(reset_ax, 'Reset')
+    
+    # 実行時間計測用の変数
+    last_time = time.time()
+    frame_count = 0
+    fps_text = fig.text(0.02, 0.01, "FPS: --", fontsize=9)
     
     # パラメータ情報更新関数
     def update_param_text():
-        param_text.set_text(f'Parameters: Du={pattern.du:.3f}, Dv={pattern.dv:.3f}, Feed={pattern.feed:.3f}, Kill={pattern.kill:.3f}')
+        param_text.set_text(f'Du={pattern.du:.3f}, Dv={pattern.dv:.3f}, Feed={pattern.feed:.3f}, Kill={pattern.kill:.3f}')
     
     # スライダー値変更時のコールバック関数
     def update_du(val):
@@ -203,18 +263,33 @@ def main():
     # 初期パラメータテキスト更新
     update_param_text()
     
-    # 実行時間計測用の変数
-    last_time = time.time()
-    frame_count = 0
-    fps_text = fig.text(0.02, 0.01, "FPS: --", fontsize=9)
+    # ワッサースタイン距離の更新関数
+    def update_wasserstein_plot():
+        nonlocal w_distance_history_u, w_distance_history_v, steps_array
+        
+        # 距離の計算
+        dist_u, dist_v = pattern.calculate_wasserstein_distance()
+        
+        # 履歴をdequeに追加（最大長を超えたら自動的に古いデータが削除される）
+        w_distance_history_u.append(dist_u)
+        w_distance_history_v.append(dist_v)
+        
+        # グラフの更新（dequeを直接プロットできないのでlistに変換）
+        line_u.set_data(steps_array, list(w_distance_history_u))
+        line_v.set_data(steps_array, list(w_distance_history_v))
+        
+        # Y軸の自動調整を削除（固定のY軸範囲を使用）
+        
+        return line_u, line_v
     
     # アニメーションの更新関数
     def update(frame):
-        nonlocal last_time, frame_count
+        nonlocal last_time, frame_count, step_counter
         
         # パターンを更新
         t_start = time.time()
         pattern.update(steps=5)
+        step_counter += 5
         
         # GPU配列をNumPy配列に変換して表示
         if GPU_AVAILABLE:
@@ -224,6 +299,9 @@ def main():
             
         # 画像データを更新
         img.set_array(display_array)
+        
+        # Wasserstein距離プロットの更新
+        update_wasserstein_plot()
         
         # FPS計算と表示
         frame_count += 1
@@ -235,11 +313,11 @@ def main():
             last_time = current_time
             frame_count = 0
             
-        return [img]
+        return [img, line_u, line_v]
     
     # マウスクリック時のイベントハンドラ
     def on_click(event):
-        if event.xdata is not None and event.ydata is not None and event.inaxes == ax:
+        if event.xdata is not None and event.ydata is not None and event.inaxes == ax_pattern:
             # クリック位置を整数座標に変換
             x = int(event.xdata)
             y = int(event.ydata)
@@ -253,12 +331,29 @@ def main():
     fig.canvas.mpl_connect('button_press_event', on_click)
     
     def reset(event):
+        nonlocal w_distance_history_u, w_distance_history_v, steps_array, step_counter
         # パターンを初期状態に戻す
         pattern.__init__(width=pattern.width, height=pattern.height, 
                          du=pattern.du, dv=pattern.dv, 
                          feed=pattern.feed, kill=pattern.kill)
-        pattern.update(steps=100)
+        pattern.update(steps=1)
+        
+        # 距離履歴をリセット (dequeのclear()メソッドを使用)
+        w_distance_history_u.clear()
+        w_distance_history_v.clear()
+        w_distance_history_u.extend([0.0] * history_steps)
+        w_distance_history_v.extend([0.0] * history_steps)
+        step_counter = 0
+        
+        # 線グラフのデータを明示的にクリア
+        line_u.set_data(steps_array, list(w_distance_history_u))
+        line_v.set_data(steps_array, list(w_distance_history_v))
+        
+        # グラフを更新
         img.set_array(cp.asnumpy(pattern.V) if GPU_AVAILABLE else pattern.V)
+        
+        # 描画を強制的に更新
+        fig.canvas.draw_idle()
     
     reset_button.on_clicked(reset)
     
@@ -266,11 +361,11 @@ def main():
     ani = FuncAnimation(fig, update, frames=None, 
                         interval=100, blit=True, save_count=50)
     
-    # 自動的なレイアウト調整を無効化し、明示的に設定したレイアウトを使用
-    plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.05, hspace=0.4)
+    # tight_layout()がうまく機能しないため、手動でレイアウトを調整
+    plt.subplots_adjust(left=0.1, right=0.9, top=0.95, bottom=0.1, hspace=0.3)
     
     plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    main(history_steps=500)  # 履歴ステップ数を引数で指定可能

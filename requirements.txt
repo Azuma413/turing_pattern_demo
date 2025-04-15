@@ -1,0 +1,1 @@
+numpy==2.2.4\nmatplotlib==3.10.1\nscipy==1.15.2\ncupy-cuda12x==13.4.1 ; platform_system != 'Darwin'\n
